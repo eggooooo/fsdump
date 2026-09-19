@@ -5,7 +5,7 @@ import (
 	"path"
 	"testing"
 
-	"github.com/YoshihikoAbe/fsdump"
+	"github.com/Ambloplites/fsdump"
 )
 
 const dataRoot = "./testdata/"
