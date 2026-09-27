@@ -4,10 +4,21 @@ import (
 	"io"
 	"log"
 	"os"
-	"path"
+	"path/filepath"
 	"runtime"
 	"sync"
 )
+
+type DumpStatus struct {
+	Err  error
+	Path string
+}
+
+func ErrorLogCallback(status DumpStatus) {
+	if status.Err != nil {
+		log.Printf("failed to process file: %s: %v", status.Path, status.Err)
+	}
+}
 
 type File struct {
 	io.Reader
@@ -35,8 +46,12 @@ type Dumper struct {
 	Src        FileSource
 	Dest       string
 	NumWorkers int
-	// intended for progress bars
+	BufSize    int
+
 	ThroughputMonitor io.Writer
+	ProgressCallback  func(status DumpStatus)
+
+	mu sync.Mutex
 }
 
 func (dumper *Dumper) Run() {
@@ -49,18 +64,25 @@ func (dumper *Dumper) Run() {
 		numWorkers = runtime.NumCPU()
 	}
 
+	bufSize := dumper.BufSize
+	if bufSize < 1 {
+		bufSize = 8192
+	}
+
 	wg := sync.WaitGroup{}
 	wg.Add(numWorkers)
+
 	for range numWorkers {
 		worker := worker{
 			dumper: dumper,
-			buffer: make([]byte, 4096),
+			buffer: make([]byte, bufSize),
 		}
 		go func() {
 			worker.run()
 			wg.Done()
 		}()
 	}
+
 	wg.Wait()
 }
 
@@ -71,20 +93,27 @@ type worker struct {
 
 func (worker *worker) run() {
 	for file := worker.dumper.Src.GetFile(); file != nil; file = worker.dumper.Src.GetFile() {
-		if err := worker.dumpFile(file); err != nil {
-			log.Printf("failed to dump file: %s: %v", file.Path, err)
-		}
+		err := worker.dumpFile(file)
 		file.Close()
+
+		if worker.dumper.ProgressCallback != nil {
+			worker.dumper.mu.Lock()
+			worker.dumper.ProgressCallback(DumpStatus{
+				Err:  err,
+				Path: file.Path,
+			})
+			worker.dumper.mu.Unlock()
+		}
 	}
 }
 
 func (worker *worker) dumpFile(in *File) error {
-	dir, _ := path.Split(in.Path)
-	if err := os.MkdirAll(path.Join(worker.dumper.Dest, dir), 0700); err != nil {
+	dir, _ := filepath.Split(in.Path)
+	if err := os.MkdirAll(filepath.Join(worker.dumper.Dest, dir), 0700); err != nil {
 		return err
 	}
 
-	out, err := os.Create(path.Join(worker.dumper.Dest, in.Path))
+	out, err := os.Create(filepath.Join(worker.dumper.Dest, in.Path))
 	if err != nil {
 		return err
 	}
